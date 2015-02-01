@@ -1,0 +1,464 @@
+using UnityEngine;
+using System.Collections;
+
+//Track the necessary unit stats
+[System.Serializable]
+public class UnitStats
+{
+    public float maxSpeed = 1.0f;            //The maximum speed this unit can move
+    public float rotationSpeed = 5.0f;        //The fastest this unit can rotate
+    public float stopRange = 1.0f;            //How close the unit will get to the target before stopping
+    public Transform highlight;                //The transform for the object that indicates highlighting
+    public bool selected;                    //Is the unit selected?
+    public string owner;                    //Which player owns this unit?
+    public string unitType;                    //What type of unit is this? Use this for setting up certain variables on instantiation
+    public UnitMotorCS targetInfo;            //Use to communicate with the unitmotor on the unit this unit hits
+    public Vector3 targetLoc = Vector3.zero;    //Where did we hit when exectuing an order?
+    public RaycastHit hit;                    //What did we hit when exectuing an order?
+    public GameObject graphics;                //The unit's mesh
+    public Texture p1Texture;                //The unit's texture for player 1
+    public Texture p2Texture;                //The unit's texture for player 2
+    public float atkPower;                    //Attack power for this unit
+    public float health;                    //Health for this unit
+    public GameObject atkTrigger;            //IF there is a trigger for handling attacks, track it here
+    public AttackMeleeCS meleeInfo;            //The melee attack script, use only for melee units
+    public AttackDirectCS directInfo;        //The ranged, direct-attack script, use only for those units
+    public AttackIndirectCS indirectInfo;    //The ranged, indirect-attack script, use only for those units
+    public bool checkHeight = false;        //Do we need to track height for determining attack bonus?
+    public Vector2 curHeight;                //The unit's current height?
+    public Vector2 lastHeight;                //The unit's height last frame
+    public float distance;                    //Distance from the unit's target
+}
+
+//Track unit control groups here
+[System.Serializable]
+public class ControlGroup
+{
+    public UnitSelectionCS selectArray;        //Get the class responsible for multi-selections
+    public bool group1;            //Group 1
+    public bool group2;            //Group 2
+    public bool group3;            //etc...
+    public bool group4;
+    public bool group5;
+    public bool group6;
+    public bool group7;
+    public bool group8;
+    public bool group9;
+    public bool group0;
+}
+
+
+[System.Serializable]
+public class UnitMotorCS : MonoBehaviour
+{
+    public UnitStats unit;                //Declare a variable for referencing the unit class
+    public ControlGroup cGroup;            //Declare a variable for referencing the control group class
+    
+    public GameObject targetArrow;            //DEBUG PURPOSES the Gameobject to use for showing where the unit's target is
+    protected GameObject activeArrow;        //DEBUG PURPOSES the variable used to keep track of the current instantiated targeting arrow
+                
+    protected bool moving;                    //Is the unit in a moving state?
+    protected Vector3 target;                //The unit's target
+    protected float curSpeed;                //Track the current speed so we can start and stop as necessary
+    protected bool rotate;                    //Is the unit rotating?
+    protected Transform highlightActive;        //The instantiated highlight transform
+    
+    void Awake ()
+    {
+        //Always start out at these settings, no exceptions.
+        unit.selected = false;
+        moving = false;
+        target = Vector3.zero;
+        curSpeed = 0.0f;
+        
+        //Setup owner and textures so that we can make sure we're selecting our own units
+        if (networkView.isMine)
+        {
+            unit.owner = "curPlayer";
+            unit.graphics.renderer.material.mainTexture = unit.p1Texture;
+        }
+        
+        //Setup owner and textures so we can't select enemy units
+        else if (!networkView.isMine)
+        {
+            unit.owner = "otherPlayer";
+            unit.graphics.renderer.material.mainTexture = unit.p2Texture;
+        }
+        
+        //Determine the unit type (set in the Inspector) and do appropriate setup.
+        if(unit.unitType == "melee")
+        {
+            unit.meleeInfo = unit.atkTrigger.GetComponent<AttackMeleeCS>();
+            unit.meleeInfo.mInfo.motor = this.gameObject.GetComponent<UnitMotorCS>();
+            unit.checkHeight = true;
+            unit.curHeight.y = transform.position.y;
+        }
+        
+        if(unit.unitType == "direct")
+        {
+            unit.directInfo = this.gameObject.GetComponent<AttackDirectCS>();
+            unit.directInfo.motor = this.gameObject.GetComponent<UnitMotorCS>();
+            unit.checkHeight = false;
+        }
+        
+        if(unit.unitType == "indirect")
+        {
+            unit.indirectInfo = this.gameObject.GetComponent<AttackIndirectCS>();
+            unit.indirectInfo.motor = this.gameObject.GetComponent<UnitMotorCS>();
+            unit.checkHeight = false;
+        }
+    }
+    
+    // Update is called once per frame
+    void Update () 
+    {
+        //If the user presses the "Order" button and the unit is selected...
+        if (Input.GetButtonDown("Order") && unit.selected)
+        {
+            //Find out where the cursor was, in 3D space, when the button was clicked, and find out what we hit
+            Ray ray = Camera.main.ScreenPointToRay (Input.mousePosition);
+            if (Physics.Raycast (ray, out unit.hit, 200.0f))
+            {
+                Destroy(activeArrow);        //DEBUG PURPOSES. Remove this eventually.
+                activeArrow = Instantiate(targetArrow, unit.hit.point, transform.rotation) as GameObject;        //DEBUG PURPOSES. Maybe? Replace this with order indicator?
+                //Set the target location to whatever we hit, and this unit into a moving/rotating state
+                unit.targetLoc = unit.hit.point;
+                moving = true;
+                rotate = true;
+                
+                //If whatever we hit ISN'T terrain, get it's unit motor.
+                if (unit.hit.collider.gameObject.tag != "Terrain")
+                {
+                    unit.targetInfo = unit.hit.collider.gameObject.GetComponent<UnitMotorCS>();                
+                    
+                    if(unit.unitType == "direct")
+                    {
+                        //Set unit to an attacking state
+                        unit.directInfo.attacking = true;
+                    }
+                    
+                    if(unit.unitType == "indirect")
+                    {
+                        //Set unit to an attacking state
+                        unit.indirectInfo.attacking = true;
+                    }
+                }
+                
+                else
+                {
+                    if(unit.unitType == "direct")
+                    {
+                        //Set unit to an attacking state
+                        unit.directInfo.attacking = false;
+                    }
+                    
+                    if(unit.unitType == "indirect")
+                    {
+                        //Set unit to an attacking state
+                        unit.indirectInfo.attacking = false;
+                    }
+                }
+            }
+        }
+        
+        //If in a moving state, move forward every frame
+        if (moving)
+        {
+            Move();
+        }
+        
+        //If in a rotating state, rotate every frame
+        if (rotate)
+        {
+            Rotate();
+        }
+        
+        //If the unit comes within the defined stop rage, stop
+        if (unit.distance         {
+            Stop();
+        }
+        
+        //If the user presses the "forward" button, and this unit is selected, issue a general move forward command
+        if (Input.GetButtonDown("Forward") && unit.selected)
+        {
+            moving = true;
+        }
+        
+        //If the user presses the "Left" button, shift selected units left
+        if (Input.GetButton("Left") && unit.selected)
+        {
+            Vector3 velocityLeft = Vector3.left * unit.maxSpeed;
+            rigidbody.AddRelativeForce(velocityLeft);
+        }
+        
+        //If the user presses the "right" button, shift selected units right
+        if (Input.GetButton("Right") && unit.selected)
+        {
+            Vector3 velocityRight = Vector3.right * unit.maxSpeed;
+            rigidbody.AddRelativeForce(velocityRight);
+        }
+        
+        //If the user presses the "stop" button, stop selected units
+        if (Input.GetButtonDown("Stop") && unit.selected)
+        {
+            Stop();
+        }
+        
+        //If the user presses shift + a control group button, set the selected units to that group
+        if (Input.GetButton("Shift"))
+        {
+            if (Input.GetButtonUp("1"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group1 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("2"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group2 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("3"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group3 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("4"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group4 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("5"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group5 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("6"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group6 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("7"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group7 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("8"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group8 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("9"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group9 = true;
+                }
+            }
+            
+            if (Input.GetButtonUp("0"))
+            {
+                if (unit.selected)
+                {
+                    cGroup.group0 = true;
+                }
+            }
+        }
+        
+        //If the user presses a control group button WITHOUT holding shift, select the group
+        if (!Input.GetButton("Shift"))
+        {
+            if (Input.GetButtonUp("1"))
+            {
+                if (cGroup.group1==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("2"))
+            {
+                if (cGroup.group2==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("3"))
+            {
+                if (cGroup.group3==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("4"))
+            {
+                if (cGroup.group4==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("5"))
+            {
+                if (cGroup.group5==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("6"))
+            {
+                if (cGroup.group6==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("7"))
+            {
+                if (cGroup.group7==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("8"))
+            {
+                if (cGroup.group8==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("9"))
+            {
+                if (cGroup.group9==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+            
+            if (Input.GetButtonUp("0"))
+            {
+                if (cGroup.group0==true)
+                {
+                    Select();
+                    cGroup.selectArray.AddSelection(this.transform);
+                }
+            }
+        }
+    }
+    
+    void Move()
+    {
+        //Continually recheck the distance from the unit to its target while moving
+        unit.distance = Vector3.Distance(unit.targetLoc, transform.position);
+        
+        //If the unit is OUT of stop range, apply some force
+        if (unit.distance >= unit.stopRange)
+        {
+            Vector3 velocity = Vector3.forward * unit.maxSpeed;
+            rigidbody.AddRelativeForce(velocity);    //Note: Rigidbodies are being used to easily facilitate units pushing (or stopping) one another
+        }
+    }
+    
+    void Rotate()
+    {
+        //Get the direction the target is in, don't worry about the y value for now
+        Vector3 direction = unit.targetLoc - transform.position;
+        direction.y = 0;
+        
+        //Always rotate towards the target
+        transform.rotation = Quaternion.Slerp (transform.rotation, Quaternion.LookRotation(direction), unit.rotationSpeed * Time.deltaTime);
+    }
+    
+    public void Stop()
+    {
+        //Reset everything to a not moving state
+        moving = false;
+        rotate = false;
+        rigidbody.AddRelativeForce (0, 0, 0);
+    }
+    
+    void Select()
+    {
+        //Remove any current selection highlights. Do this to ensure duplicates don't build up if reselecting the same unit
+        if (highlightActive != null)
+        {
+            Destroy(highlightActive.gameObject);
+        }
+
+        //Select the unit and add a new highlight
+        unit.selected = true;
+        highlightActive = Instantiate(unit.highlight, new Vector3(transform.position.x, 0.0f, transform.position.z), transform.rotation) as Transform;
+        highlightActive.parent = transform;
+    }
+    
+    void Deselect()
+    {
+        //Deselect the unit and remove the highlight
+        unit.selected = false;
+        Destroy(highlightActive.gameObject);
+    }
+    
+    void SendDamage(UnitMotorCS enemy)
+    {
+        //Send damage to the unit if it is not owned by the same person as this unit
+        if (enemy.unit.owner != this.unit.owner)
+        {
+            print("Sending Damage");
+            networkView.RPC("ReceiveDamage", RPCMode.Others, unit.atkPower);
+        }
+    }
+    
+    //@RPC
+    public void ReceiveDamage(float incDamage)
+    {
+        //Subtract the incoming damage from this unit's overall health
+        unit.health -= (incDamage);
+        
+        //If this unit's health drops to or below 0, deselect this unit and destroy it across the network
+        if (unit.health         {
+            if (unit.selected)
+            {
+                Deselect();
+            }
+            
+            Network.Destroy(this.gameObject);
+        }
+    }
+}
